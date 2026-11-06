@@ -170,6 +170,77 @@ static u64 nowMs(void) { return armTicksToNs(armGetSystemTick()) / 1000000ULL; }
 static float freqToT(float f) { return logf(f / FREQ_MIN) / logf(FREQ_MAX / FREQ_MIN); }
 static float tToFreq(float t) { return FREQ_MIN * powf(FREQ_MAX / FREQ_MIN, clampf(t, 0.0f, 1.0f)); }
 
+// ---------- Equalizer (shows which frequencies are being played) ----------
+#define EQ_BINS     26
+#define EQ_H         6
+#define EQ_ROW_NOW  37
+#define EQ_ROW_TOP  38
+#define EQ_ROW_AXIS (EQ_ROW_TOP + EQ_H)
+#define EQ_COL0      2
+#define EQ_STEP      3          // 2 chars bar + 1 gap
+
+static float eqLvl[EQ_BINS];
+static float eqPeak[EQ_BINS];
+
+static void eqUpdate(bool active, float f, float a)
+{
+    for (int i = 0; i < EQ_BINS; i++) {
+        eqLvl[i] *= 0.86f;
+        if (eqLvl[i] < 0.01f) eqLvl[i] = 0.0f;
+        eqPeak[i] -= 0.012f;
+        if (eqPeak[i] < 0.0f) eqPeak[i] = 0.0f;
+    }
+    if (active) {
+        int b = (int)(freqToT(f) * EQ_BINS);
+        if (b < 0) b = 0;
+        if (b >= EQ_BINS) b = EQ_BINS - 1;
+        if (a > eqLvl[b]) eqLvl[b] = a;
+        if (b > 0           && a * 0.4f > eqLvl[b - 1]) eqLvl[b - 1] = a * 0.4f;
+        if (b < EQ_BINS - 1 && a * 0.4f > eqLvl[b + 1]) eqLvl[b + 1] = a * 0.4f;
+    }
+    for (int i = 0; i < EQ_BINS; i++)
+        if (eqLvl[i] > eqPeak[i]) eqPeak[i] = eqLvl[i];
+}
+
+static bool eqVisible(void)
+{
+    for (int i = 0; i < EQ_BINS; i++)
+        if (eqLvl[i] > 0.0f || eqPeak[i] > 0.0f) return true;
+    return false;
+}
+
+static void eqDrawAxis(void)
+{
+    static const int marks[6] = { 65, 100, 200, 400, 800, 1245 };
+    printf("\x1b[%d;1H\x1b[K", EQ_ROW_AXIS);
+    for (int i = 0; i < 6; i++) {
+        char buf[8];
+        int len = snprintf(buf, sizeof(buf), "%d", marks[i]);
+        int col = EQ_COL0 + (int)(EQ_STEP * EQ_BINS * freqToT((float)marks[i]));
+        if (col + len > 80) col = 81 - len;
+        printf("\x1b[%d;%dH%s", EQ_ROW_AXIS, col, buf);
+    }
+}
+
+static void eqDraw(bool active, float hz)
+{
+    printf("\x1b[%d;1HEQUALIZER (Hz, log scale)   Now: ", EQ_ROW_NOW);
+    if (active) printf("%7.1f Hz", hz); else printf("    --- Hz");
+    printf("\x1b[K");
+    for (int r = 0; r < EQ_H; r++) {
+        int need = EQ_H - r;
+        printf("\x1b[%d;1H ", EQ_ROW_TOP + r);
+        for (int b = 0; b < EQ_BINS; b++) {
+            int h  = (int)ceilf(sqrtf(eqLvl[b])  * EQ_H);
+            int ph = (int)ceilf(sqrtf(eqPeak[b]) * EQ_H);
+            if (h >= need)       printf("## ");
+            else if (ph == need) printf("-- ");
+            else                 printf("   ");
+        }
+        printf("\x1b[K");
+    }
+}
+
 static void drawBar(int row, float t)
 {
     int pos = (int)(clampf(t, 0.0f, 1.0f) * (BAR_W - 1) + 0.5f);
@@ -358,6 +429,13 @@ int main(int argc, char **argv)
             hidSendVibrationValue(devs[i].h, (active && match) ? &val : &zero);
         }
 
+        // ---- equalizer ----
+        static bool eqWasOn = false;
+        eqUpdate(active, playFreq, amp);
+        bool eqOn = eqVisible();
+        if (eqOn || eqWasOn) eqDraw(active, playFreq);
+        eqWasOn = eqOn;
+
         // ---- UI ----
         static u64 lastDraw = 0;
         if (dirty || t - lastDraw > 250) {
@@ -403,9 +481,12 @@ int main(int argc, char **argv)
             drawButtonRow(1, row1, p1);
             drawButtonRow(2, row2, p2);
 
-            printf("\x1b[34;1HButtons: A hold tone | B pulses | X play song | ZR next song | Y siren\x1b[K");
-            printf("\x1b[35;1H Up/Down note | Left/Right side | L/R volume | ZL band\x1b[K");
-            printf("\x1b[36;1H -  stop | +  exit\x1b[K");
+            printf("\x1b[33;1HButtons: A hold tone | B pulses | X play song | ZR next song | Y siren\x1b[K");
+            printf("\x1b[34;1H Up/Down note | Left/Right side | L/R volume | ZL band\x1b[K");
+            printf("\x1b[35;1H -  stop | +  exit\x1b[K");
+
+            eqDrawAxis();
+            eqDraw(active, playFreq);
         }
         consoleUpdate(NULL);
     }
