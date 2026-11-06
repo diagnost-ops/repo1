@@ -42,9 +42,9 @@
 #define BTN_W           18
 #define BTN_H           3
 static const int BTN_COL[4] = { 1, 21, 41, 61 };
-static const int BTN_ROW[2] = { 21, 25 };
+static const int BTN_ROW[3] = { 21, 25, 29 };
+#define NBTN_USED 10
 
-#define MELODY_REPEATS 2   // melody is played twice => 2x longer
 
 typedef struct {
     HidVibrationDeviceHandle h;
@@ -68,16 +68,39 @@ static const char *noteNames[12] = { "C","C#","D","D#","E","F","F#","G","G#","A"
 
 typedef enum { SEQ_NONE = 0, SEQ_MELODY, SEQ_SWEEP, SEQ_PULSE } SeqMode;
 
-// "Ode to Joy" (public domain): midi note, duration in beats
+// Songs (all public domain): midi note (0 = rest), duration in beats
 typedef struct { int midi; float beats; } MNote;
-static const MNote melody[] = {
+typedef struct { const char *name; const MNote *notes; int len; float beatMs; int repeats; } Song;
+
+static const MNote ode[] = {   // Ode to Joy
     {64,1},{64,1},{65,1},{67,1},{67,1},{65,1},{64,1},{62,1},
     {60,1},{60,1},{62,1},{64,1},{64,1.5f},{62,0.5f},{62,2},
     {64,1},{64,1},{65,1},{67,1},{67,1},{65,1},{64,1},{62,1},
     {60,1},{60,1},{62,1},{64,1},{62,1.5f},{60,0.5f},{60,2},
 };
-#define MELODY_LEN ((int)(sizeof(melody) / sizeof(melody[0])))
-#define BEAT_MS 320.0f
+static const MNote bday[] = {  // Happy Birthday
+    {67,0.75f},{67,0.25f},{69,1},{67,1},{72,1},{71,2},
+    {67,0.75f},{67,0.25f},{69,1},{67,1},{74,1},{72,2},
+    {67,0.75f},{67,0.25f},{79,1},{76,1},{72,1},{71,1},{69,1},
+    {77,0.75f},{77,0.25f},{76,1},{72,1},{74,1},{72,2},
+};
+static const MNote jingle[] = { // Jingle Bells (chorus)
+    {64,1},{64,1},{64,2},  {64,1},{64,1},{64,2},
+    {64,1},{67,1},{60,1.5f},{62,0.5f},  {64,4},
+    {65,1},{65,1},{65,1.5f},{65,0.5f},  {65,1},{64,1},{64,1},{64,0.5f},{64,0.5f},
+    {64,1},{62,1},{62,1},{64,1},  {62,2},{67,2},
+    {64,1},{64,1},{64,2},  {64,1},{64,1},{64,2},
+    {64,1},{67,1},{60,1.5f},{62,0.5f},  {64,4},
+    {65,1},{65,1},{65,1.5f},{65,0.5f},  {65,1},{64,1},{64,1},{64,0.5f},{64,0.5f},
+    {67,1},{67,1},{65,1},{62,1},  {60,4},
+};
+#define NOTES(a) ((int)(sizeof(a) / sizeof((a)[0])))
+#define NSONGS 3
+static const Song songs[NSONGS] = {
+    { "Ode to Joy",     ode,    NOTES(ode),    320.0f, 2 },
+    { "Happy Birthday", bday,   NOTES(bday),   420.0f, 1 },
+    { "Jingle Bells",   jingle, NOTES(jingle), 270.0f, 1 },
+};
 
 static float midiToFreq(int m) { return 440.0f * powf(2.0f, (m - 69) / 12.0f); }
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -162,10 +185,11 @@ static void drawButtonRow(int rowIdx, const char *labels[4], const bool pressed[
     for (int line = 0; line < BTN_H; line++) {
         printf("\x1b[%d;1H", row + line);
         for (int c = 0; c < 4; c++) {
+            if (c) printf("  ");
+            if (!labels[c]) { printf("%*s", BTN_W, ""); continue; }
             char fill = pressed[c] ? '#' : '-';
             char side = pressed[c] ? '#' : '|';
             char corner = pressed[c] ? '#' : '+';
-            if (c) printf("  ");
             if (line == 1) {
                 int len = (int)strlen(labels[c]);
                 int inner = BTN_W - 2;
@@ -184,6 +208,7 @@ static void drawButtonRow(int rowIdx, const char *labels[4], const bool pressed[
 
 static bool inBtn(int b, u32 x, u32 y)
 {
+    if (b >= NBTN_USED) return false;
     int rowIdx = b / 4, c = b % 4;
     u32 x0 = (u32)((BTN_COL[c] - 1) * CW);
     u32 x1 = x0 + BTN_W * CW;
@@ -209,11 +234,11 @@ int main(int argc, char **argv)
 
     SeqMode seq = SEQ_NONE;
     u64     seqStart = 0;
-    int     melIdx = 0, melPass = 0;
+    int     melIdx = 0, melPass = 0, song = 0;
     u64     melNoteStart = 0;
 
-    bool btnNow[8]  = { false };
-    bool btnPrev[8] = { false };
+    bool btnNow[12]  = { false };
+    bool btnPrev[12] = { false };
     bool quit = false;
 
     bool dirty = true;
@@ -244,14 +269,14 @@ int main(int argc, char **argv)
                 amp = clampf(((float)x - BAR_X0) / (float)BAR_PX, 0.0f, 1.0f);
                 dirty = true;
             } else {
-                for (int b = 0; b < 8; b++)
+                for (int b = 0; b < NBTN_USED; b++)
                     if (inBtn(b, x, y)) btnNow[b] = true;
             }
         }
-        for (int b = 0; b < 8; b++)
+        for (int b = 0; b < 12; b++)
             if (btnNow[b] != btnPrev[b]) dirty = true;
-        u8 pressedEdge = 0;
-        for (int b = 0; b < 8; b++)
+        u16 pressedEdge = 0;
+        for (int b = 0; b < 12; b++)
             if (btnNow[b] && !btnPrev[b]) pressedEdge |= (1 << b);
 
         // ---- button settings ----
@@ -266,17 +291,21 @@ int main(int argc, char **argv)
 
         // ---- sequences ----
         u64 t = nowMs();
-        bool doStop   = (kd & HidNpadButton_Minus) || (pressedEdge & (1 << 4));
-        bool doMelody = (kd & HidNpadButton_X)     || (pressedEdge & (1 << 2));
-        bool doSweep  = (kd & HidNpadButton_Y)     || (pressedEdge & (1 << 3));
+        int startSong = -1;
+        bool doStop   = (kd & HidNpadButton_Minus) || (pressedEdge & (1 << 3));
+        bool doSweep  = (kd & HidNpadButton_Y)     || (pressedEdge & (1 << 2));
         bool doPulse  = (kd & HidNpadButton_B)     || (pressedEdge & (1 << 1));
+        if (kd & HidNpadButton_ZR) { song = (song + 1) % NSONGS; dirty = true; }
+        if (kd & HidNpadButton_X)  startSong = song;
+        for (int i = 0; i < NSONGS; i++)
+            if (pressedEdge & (1 << (4 + i))) startSong = i;
 
-        if (pressedEdge & (1 << 5)) { target = (target + 1) % 3; dirty = true; }
-        if (pressedEdge & (1 << 6)) { band = (Band)((band + 1) % BAND_COUNT); dirty = true; }
         if (pressedEdge & (1 << 7)) quit = true;
+        if (pressedEdge & (1 << 8)) { target = (target + 1) % 3; dirty = true; }
+        if (pressedEdge & (1 << 9)) { band = (Band)((band + 1) % BAND_COUNT); dirty = true; }
 
         if (doStop)   { seq = SEQ_NONE; dirty = true; }
-        if (doMelody) { seq = SEQ_MELODY; melIdx = 0; melPass = 0; melNoteStart = t; dirty = true; }
+        if (startSong >= 0) { song = startSong; seq = SEQ_MELODY; melIdx = 0; melPass = 0; melNoteStart = t; dirty = true; }
         if (doSweep)  { seq = SEQ_SWEEP;  seqStart = t; dirty = true; }
         if (doPulse)  { seq = SEQ_PULSE;  seqStart = t; dirty = true; }
 
@@ -284,22 +313,24 @@ int main(int argc, char **argv)
         float playFreq = freq;
 
         if (seq == SEQ_MELODY) {
-            float dur = melody[melIdx].beats * BEAT_MS;
+            const Song *sg = &songs[song];
+            float dur = sg->notes[melIdx].beats * sg->beatMs;
             u64 el = t - melNoteStart;
             if (el >= (u64)dur) {
                 melIdx++;
                 melNoteStart = t;
                 el = 0;
-                if (melIdx >= MELODY_LEN) {
+                if (melIdx >= sg->len) {
                     melPass++;
                     melIdx = 0;
-                    if (melPass >= MELODY_REPEATS) { seq = SEQ_NONE; dirty = true; }
+                    if (melPass >= sg->repeats) { seq = SEQ_NONE; dirty = true; }
                 }
-                if (seq == SEQ_MELODY) dur = melody[melIdx].beats * BEAT_MS;
+                if (seq == SEQ_MELODY) dur = sg->notes[melIdx].beats * sg->beatMs;
             }
             if (seq == SEQ_MELODY) {
-                playFreq = midiToFreq(melody[melIdx].midi);
-                active = (float)el < dur * 0.85f;   // short gap between notes
+                int n = sg->notes[melIdx].midi;
+                if (n > 0) playFreq = midiToFreq(n);
+                active = n > 0 && (float)el < dur * 0.85f;   // short gap between notes
             }
         } else if (seq == SEQ_SWEEP) {
             float p = (float)(t - seqStart) / 4000.0f;   // 4 s, 2 siren cycles
@@ -345,8 +376,10 @@ int main(int argc, char **argv)
             printf("\x1b[K");
 
             printf("\x1b[5;1HPlaying: %s\x1b[K",
-                   seq == SEQ_MELODY ? "melody (Ode to Joy)" : seq == SEQ_SWEEP ? "siren sweep" :
+                   seq == SEQ_MELODY ? songs[song].name : seq == SEQ_SWEEP ? "siren sweep" :
                    seq == SEQ_PULSE ? "pulses" : "-");
+
+            printf("\x1b[6;1HSong: %s  (ZR = next)\x1b[K", songs[song].name);
 
             printf("\x1b[%d;1HFrequency: %7.1f Hz   (%s%d)\x1b[K",
                    ROW_FREQ_LABEL, freq, noteNames[midi % 12], midi / 12 - 1);
@@ -360,16 +393,19 @@ int main(int argc, char **argv)
             char tgt[24], bnd[24];
             snprintf(tgt, sizeof(tgt), "SIDE: %s", targetShort[target]);
             snprintf(bnd, sizeof(bnd), "BAND: %s", bandShort[band]);
-            const char *row0[4] = { "HOLD TONE", "PULSES", "MELODY", "SIREN" };
-            const char *row1[4] = { "STOP", tgt, bnd, "EXIT" };
+            const char *row0[4] = { "HOLD TONE", "PULSES", "SIREN", "STOP" };
+            const char *row1[4] = { "ODE TO JOY", "HAPPY BIRTHDAY", "JINGLE BELLS", "EXIT" };
+            const char *row2[4] = { tgt, bnd, NULL, NULL };
             bool p0[4] = { btnNow[0], btnNow[1], btnNow[2], btnNow[3] };
             bool p1[4] = { btnNow[4], btnNow[5], btnNow[6], btnNow[7] };
+            bool p2[4] = { btnNow[8], btnNow[9], false, false };
             drawButtonRow(0, row0, p0);
             drawButtonRow(1, row1, p1);
+            drawButtonRow(2, row2, p2);
 
-            printf("\x1b[30;1HButtons: A hold tone | B pulses | X melody | Y siren\x1b[K");
-            printf("\x1b[31;1H Up/Down note | Left/Right side | L/R volume | ZL band\x1b[K");
-            printf("\x1b[32;1H -  stop | +  exit\x1b[K");
+            printf("\x1b[34;1HButtons: A hold tone | B pulses | X play song | ZR next song | Y siren\x1b[K");
+            printf("\x1b[35;1H Up/Down note | Left/Right side | L/R volume | ZL band\x1b[K");
+            printf("\x1b[36;1H -  stop | +  exit\x1b[K");
         }
         consoleUpdate(NULL);
     }
