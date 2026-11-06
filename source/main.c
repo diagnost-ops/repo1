@@ -19,8 +19,8 @@
 #define HIGH_MAX 1252.572266f
 
 // Frequency range exposed in the UI
-#define FREQ_MIN  65.0f
-#define FREQ_MAX 1245.0f
+#define FREQ_MIN  41.0f
+#define FREQ_MAX 1250.0f
 
 // Console cell size in pixels (80x45 grid on 1280x720)
 #define CW 16
@@ -43,7 +43,7 @@
 #define BTN_H           3
 static const int BTN_COL[4] = { 1, 21, 41, 61 };
 static const int BTN_ROW[3] = { 21, 25, 29 };
-#define NBTN_USED 10
+#define NBTN_USED 11
 
 
 typedef struct {
@@ -95,12 +95,29 @@ static const MNote jingle[] = { // Jingle Bells (chorus)
     {67,1},{67,1},{65,1},{62,1},  {60,4},
 };
 #define NOTES(a) ((int)(sizeof(a) / sizeof((a)[0])))
-#define NSONGS 3
-static const Song songs[NSONGS] = {
+#define NSONGS 4
+#define SPEC_MAX 160
+static MNote spec[SPEC_MAX];
+static Song songs[NSONGS] = {
     { "Ode to Joy",     ode,    NOTES(ode),    320.0f, 2 },
     { "Happy Birthday", bday,   NOTES(bday),   420.0f, 1 },
     { "Jingle Bells",   jingle, NOTES(jingle), 270.0f, 1 },
+    { "Full Spectrum",  spec,   0,             240.0f, 1 },
 };
+
+// Full-range test: chromatic scale up and down over the whole HD Rumble
+// range (~41 Hz .. ~1245 Hz), then octave leaps across the range.
+static void buildSpectrumSong(void)
+{
+    static const int leaps[] = { 28, 40, 52, 64, 76, 87, 76, 64, 52, 40, 28 };
+    int n = 0;
+    for (int m = 28; m <= 87; m++) { spec[n].midi = m; spec[n].beats = 0.5f; n++; }
+    spec[n].midi = 0; spec[n].beats = 1.0f; n++;
+    for (int m = 87; m >= 28; m--) { spec[n].midi = m; spec[n].beats = 0.5f; n++; }
+    spec[n].midi = 0; spec[n].beats = 1.0f; n++;
+    for (int i = 0; i < 11; i++) { spec[n].midi = leaps[i]; spec[n].beats = 1.0f; n++; }
+    songs[3].len = n;
+}
 
 static float midiToFreq(int m) { return 440.0f * powf(2.0f, (m - 69) / 12.0f); }
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -211,7 +228,7 @@ static bool eqVisible(void)
 
 static void eqDrawAxis(void)
 {
-    static const int marks[6] = { 65, 100, 200, 400, 800, 1245 };
+    static const int marks[6] = { 41, 100, 200, 400, 800, 1250 };
     printf("\x1b[%d;1H\x1b[K", EQ_ROW_AXIS);
     for (int i = 0; i < 6; i++) {
         char buf[8];
@@ -296,6 +313,7 @@ int main(int argc, char **argv)
     padInitializeAny(&pad);
     hidInitializeTouchScreen();
     hidPermitVibration(true);
+    buildSpectrumSong();
     rescan();
 
     float freq   = 440.0f;
@@ -371,7 +389,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < NSONGS; i++)
             if (pressedEdge & (1 << (4 + i))) startSong = i;
 
-        if (pressedEdge & (1 << 7)) quit = true;
+        if (pressedEdge & (1 << 10)) quit = true;
         if (pressedEdge & (1 << 8)) { target = (target + 1) % 3; dirty = true; }
         if (pressedEdge & (1 << 9)) { band = (Band)((band + 1) % BAND_COUNT); dirty = true; }
 
@@ -472,11 +490,11 @@ int main(int argc, char **argv)
             snprintf(tgt, sizeof(tgt), "SIDE: %s", targetShort[target]);
             snprintf(bnd, sizeof(bnd), "BAND: %s", bandShort[band]);
             const char *row0[4] = { "HOLD TONE", "PULSES", "SIREN", "STOP" };
-            const char *row1[4] = { "ODE TO JOY", "HAPPY BIRTHDAY", "JINGLE BELLS", "EXIT" };
-            const char *row2[4] = { tgt, bnd, NULL, NULL };
+            const char *row1[4] = { "ODE TO JOY", "HAPPY BIRTHDAY", "JINGLE BELLS", "FULL SPECTRUM" };
+            const char *row2[4] = { tgt, bnd, "EXIT", NULL };
             bool p0[4] = { btnNow[0], btnNow[1], btnNow[2], btnNow[3] };
             bool p1[4] = { btnNow[4], btnNow[5], btnNow[6], btnNow[7] };
-            bool p2[4] = { btnNow[8], btnNow[9], false, false };
+            bool p2[4] = { btnNow[8], btnNow[9], btnNow[10], false };
             drawButtonRow(0, row0, p0);
             drawButtonRow(1, row1, p1);
             drawButtonRow(2, row2, p2);
